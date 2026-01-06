@@ -10,12 +10,16 @@ st.set_page_config(page_title="窗簾店雲端管理系統", layout="wide")
 ADMIN_PASSWORD = "8888" 
 
 # --- 1. 建立雲端連線 ---
-# 這裡會自動抓取你設定在 Secrets 裡的 Service Account 憑證
+# --- 1. 建立雲端連線 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
-    # 讀取 Google Sheets 最新資料，ttl=0 確保不讀舊快取
-    df = conn.read(ttl="0s")
+    # 這裡直接把你的網址寫死在程式碼裡，確保萬無一失
+    url = "https://docs.google.com/spreadsheets/d/1qp8vdkxvMl0xYuN40vS3qAt1uppQtcLiFKFwuI_RN5A/edit#gid=0"
+    
+    # 讀取資料
+    df = conn.read(spreadsheet=url, ttl="0s")
+    
     if df is None or df.empty:
         return pd.DataFrame(columns=[
             "訂單編號", "訂單日期", "客戶姓名", "電話", "地址", 
