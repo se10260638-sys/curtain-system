@@ -169,4 +169,50 @@ if choice == "📇 客戶資料卡":
                 st.warning("已全數刪除。")
                 st.rerun()
 
-# (其餘 新增訂單 與 財務報表 邏輯不變...)
+# --- 功能 2：新增訂單 ---
+elif choice == "➕ 新增客戶訂單":
+    st.header("📋 建立新客戶資料卡")
+    with st.form("new_order", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            c_name = st.text_input("客戶姓名*")
+            c_phone = st.text_input("聯絡電話 (數字)")
+            c_address = st.text_input("施工地址*")
+        with col2:
+            c_total = st.number_input("訂單金額", min_value=0, step=1)
+            c_paid = st.number_input("已付金額", min_value=0, step=1)
+            c_worker = st.selectbox("預計代工師傅", WORKERS)
+        c_content = st.text_area("訂購詳細內容")
+        
+        if st.form_submit_button("✅ 存入客戶資料卡"):
+            if not c_name or not c_address:
+                st.error("姓名與地址為必填！")
+            else:
+                new_row = pd.DataFrame([{
+                    "訂單編號": f"ORD{datetime.now().strftime('%m%d%H%M%S')}",
+                    "訂單日期": str(datetime.now().date()), "客戶姓名": c_name,
+                    "電話": re.sub(r'\D', '', c_phone), "地址": c_address, "訂購內容": c_content,
+                    "總金額": int(c_total), "已收金額": int(c_paid), "師傅工資": 0, "施工狀態": "已接單", "代工師傅": c_worker
+                }])
+                df_save = pd.concat([df_orders, new_row], ignore_index=True).drop(columns=['年份', '月份'], errors='ignore')
+                conn.update(worksheet="訂單資料", data=df_save)
+                st.success("客戶已建檔！")
+
+# --- 功能 3：財務損益報表 ---
+elif choice == "💰 財務損益報表":
+    pwd = st.text_input("請輸入管理密碼", type="password")
+    if pwd == ADMIN_PASSWORD:
+        st.header("📈 經營損益分析 (整數版)")
+        p_agg = df_purchases.groupby("訂單編號")["進貨金額"].sum().reset_index()
+        report = pd.merge(df_orders, p_agg, on="訂單編號", how="left").fillna(0)
+        report['淨利'] = report['總金額'] - report['師傅工資'] - report['進貨金額']
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("總業績", f"${int(report['總金額'].sum()):,.0f}")
+        c2.metric("總支出", f"${int(report['師傅工資'].sum() + report['進貨金額'].sum()):,.0f}")
+        c3.metric("總淨利", f"${int(report['淨利'].sum()):,.0f}")
+
+        st.divider()
+        st.dataframe(report[["客戶姓名", "總金額", "進貨金額", "師傅工資", "淨利", "施工狀態"]].style.format({
+            "總金額": "{:,.0f}", "進貨金額": "{:,.0f}", "師傅工資": "{:,.0f}", "淨利": "{:,.0f}"
+        }))
