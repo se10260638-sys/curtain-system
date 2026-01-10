@@ -1,129 +1,184 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
-import os
 
-# 設定網頁標題
-st.set_page_config(page_title="窗簾店管理系統 V2", layout="wide")
+# --- 1. 基本設定與廠商清單 ---
+st.set_page_config(page_title="窗簾專家管理系統 Pro", layout="wide")
 
-# 初始化資料庫
-DB_FILE = "orders_db.csv"
-if not os.path.exists(DB_FILE):
-    df_init = pd.DataFrame(columns=[
-        "訂單編號", "訂單日期", "客戶姓名", "電話", "地址", 
-        "訂購內容", "總金額", "施工日期", "施工師傅", "狀態"
-    ])
-    df_init.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
+ADMIN_PASSWORD = "8888"
 
-def load_data():
-    df = pd.read_csv(DB_FILE, encoding='utf-8-sig')
-    # 確保日期欄位格式正確
-    df['訂單日期'] = df['訂單日期'].astype(str)
-    df['施工日期'] = df['施工日期'].astype(str)
-    return df
+# 廠商資料庫連動設定
+VENDOR_DATA = {
+    "窗簾布類": ["大晉", "創世紀", "可愛", "程祥", "聚合", "萊茵", "海淇", "凱薩", "德克力", "施小姐"],
+    "捲簾五金類": ["彩樺", "和發", "大晉", "萊茵", "可愛", "高仕", "大瀚", "將元", "宏易", "莊小姐"],
+    "壁紙類": ["竑美", "優格", "全球", "高仕"],
+    "地磚地毯類": ["旺宏", "皇家", "三凱", "富銘"],
+    "木地板": ["其他"],
+    "表布代工": ["禾益"],
+}
+WORKERS = ["小淯", "小林", "阿期", "小鑫", "小祥", "其他"]
+STATUS_OPTIONS = ["已接單", "備貨中", "施工中", "已完工", "已結案"]
 
-def save_data(df):
-    df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
+# --- 2. 雲端連線與讀取 ---
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 側邊欄導覽
-menu = ["新增訂單", "施工調度與狀態更新", "修改/刪除訂單", "客戶統計與營業額"]
-choice = st.sidebar.selectbox("功能選單", menu)
+def load_data(sheet_name, cols):
+    try:
+        df = conn.read(worksheet=sheet_name, ttl="0s")
+        if df is None or df.empty:
+            return pd.DataFrame(columns=cols)
+        for col in cols:
+            if col not in df.columns:
+                df[col] = ""
+        return df
+    except:
+        return pd.DataFrame(columns=cols)
 
-# --- 功能 1：新增訂單 ---
-if choice == "新增訂單":
-    st.header("📋 新增客戶訂單")
-    with st.form("order_form"):
+df_orders = load_data("訂單資料", ["訂單編號", "訂單日期", "客戶姓名", "電話", "地址", "訂購內容", "總金額", "已收金額", "師傅工資", "施工狀態", "代工師傅"])
+df_purchases = load_data("採購明細", ["訂單編號", "廠商類型", "廠商名稱", "進貨金額", "叫貨日期", "備註"])
+
+# 強制轉換格式
+df_orders['總金額'] = pd.to_numeric(df_orders['總金額'], errors='coerce').fillna(0)
+df_orders['已收金額'] = pd.to_numeric(df_orders['已收金額'], errors='coerce').fillna(0)
+df_orders['師傅工資'] = pd.to_numeric(df_orders['師傅工資'], errors='coerce').fillna(0)
+df_purchases['進貨金額'] = pd.to_numeric(df_purchases['進貨金額'], errors='coerce').fillna(0)
+df_orders['訂單日期'] = pd.to_datetime(df_orders['訂單日期'], errors='coerce')
+
+# --- 3. 側邊欄導覽 ---
+st.sidebar.title("🏮 窗簾經營管理中心")
+menu = ["📇 客戶資料卡", "➕ 新增客戶訂單", "💰 財務損益報表"]
+choice = st.sidebar.selectbox("切換功能", menu)
+
+# --- 功能 1：客戶資料卡 ---
+if choice == "📇 客戶資料卡":
+    st.header("📇 客戶資料管理中心")
+    
+    if df_orders.empty:
+        st.info("目前尚無客戶資料。")
+    else:
+        # --- 年份篩選 ---
+        df_orders['年份'] = df_orders['訂單日期'].dt.year.fillna(datetime.now().year).astype(int)
+        years = sorted(df_orders['年份'].unique().tolist(), reverse=True)
+        selected_year = st.sidebar.selectbox("📅 選擇年份", years)
+        
+        # 根據年份過濾客戶
+        yearly_df = df_orders[df_orders['年份'] == selected_year]
+        search_list = yearly_df.apply(lambda r: f"{r['客戶姓名']} | {r['地址']}", axis=1).tolist()
+        selected_client_str = st.selectbox(f"🔍 請選擇 {selected_year} 年客戶：", search_list)
+        
+        # 抓取該客戶資料
+        target_name = selected_client_str.split(" | ")[0]
+        target_address = selected_client_str.split(" | ")[1]
+        client_order = df_orders[(df_orders["客戶姓名"] == target_name) & (df_orders["地址"] == target_address)].iloc[0]
+        order_id = client_order["訂單編號"]
+        idx = df_orders[(df_orders["客戶姓名"] == target_name) & (df_orders["地址"] == target_address)].index[0]
+
+        # --- 顯示與修改區域 ---
+        with st.form("edit_client_form"):
+            st.subheader("🛠️ 修改客戶與訂單資料")
+            col1, col2 = st.columns(2)
+            with col1:
+                u_name = st.text_input("客戶姓名", value=str(client_order['客戶姓名']))
+                u_phone = st.text_input("聯絡電話", value=str(client_order['電話']))
+                u_addr = st.text_input("施工地址", value=str(client_order['地址']))
+                status_idx = STATUS_OPTIONS.index(client_order['施工狀態']) if client_order['施工狀態'] in STATUS_OPTIONS else 0
+                u_status = st.selectbox("施工進度", STATUS_OPTIONS, index=status_idx)
+            with col2:
+                u_total = st.number_input("訂單總金額", value=float(client_order['總金額']))
+                u_paid = st.number_input("已收金額", value=float(client_order['已收金額']))
+                u_wage = st.number_input("代工師傅工資", value=float(client_order['師傅工資']))
+                worker_idx = WORKERS.index(client_order['代工師傅']) if client_order['代工師傅'] in WORKERS else 0
+                u_worker = st.selectbox("指定代工師傅", WORKERS, index=worker_idx)
+            
+            u_content = st.text_area("訂購內容", value=str(client_order['訂購內容']), height=150)
+            
+            c1, c2, c3 = st.columns([1, 1, 2])
+            if c1.form_submit_button("✅ 儲存所有修改"):
+                df_orders.loc[idx, ["客戶姓名", "電話", "地址", "施工狀態", "總金額", "已收金額", "師傅工資", "代工師傅", "訂購內容"]] = \
+                    [u_name, u_phone, u_addr, u_status, u_total, u_paid, u_wage, u_worker, u_content]
+                conn.update(worksheet="訂單資料", data=df_orders.drop(columns=['年份'])) # 移除暫時的年份欄位再存
+                st.success("資料已成功更新！")
+                st.rerun()
+            
+            if c2.form_submit_button("🚨 刪除此訂單"):
+                df_orders = df_orders.drop(idx).drop(columns=['年份'])
+                df_purchases = df_purchases[df_purchases["訂單編號"] != order_id]
+                conn.update(worksheet="訂單資料", data=df_orders)
+                conn.update(worksheet="採購明細", data=df_purchases)
+                st.warning("已刪除該客戶資料。")
+                st.rerun()
+
+        st.divider()
+
+        # --- 叫貨明細區塊 ---
+        st.subheader("📦 廠商叫貨明細")
+        this_p = df_purchases[df_purchases["訂單編號"] == order_id]
+        if not this_p.empty:
+            st.table(this_p[["廠商類型", "廠商名稱", "進貨金額", "叫貨日期", "備註"]])
+            st.write(f"**總叫貨成本：${this_p['進貨金額'].sum():,.0f}**")
+        
+        # --- 連動廠商登記 ---
+        with st.expander("➕ 新增一筆叫貨記錄"):
+            # 使用 Session State 來處理連動選單
+            p_type = st.selectbox("1. 選擇廠商類別", list(VENDOR_DATA.keys()), key="p_type_select")
+            # 根據類別連動廠商名單
+            p_vendor = st.selectbox("2. 選擇廠商名稱", VENDOR_DATA[p_type] + ["其他(自行輸入)"])
+            
+            final_v = p_vendor
+            if p_vendor == "其他(自行輸入)":
+                final_v = st.text_input("請輸入自訂廠商名稱")
+            
+            p_cost = st.number_input("金額", min_value=0)
+            p_note = st.text_input("備註 (布號/尺寸)")
+            
+            if st.button("確認新增進貨"):
+                new_p = pd.DataFrame([{"訂單編號": order_id, "廠商類型": p_type, "廠商名稱": final_v, "進貨金額": p_cost, "叫貨日期": str(datetime.now().date()), "備註": p_note}])
+                updated_p = pd.concat([df_purchases, new_p], ignore_index=True)
+                conn.update(worksheet="採購明細", data=updated_p)
+                st.success("進貨記錄已更新！")
+                st.rerun()
+
+# --- 功能 2：新增訂單 ---
+elif choice == "➕ 新增客戶訂單":
+    st.header("📋 建立新客戶資料卡")
+    with st.form("new_order", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
-            order_id = f"ORD{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            st.write(f"**建議訂單編號:** {order_id}")
-            order_date = st.date_input("訂單日期", datetime.now())
-            cust_name = st.text_input("客戶姓名")
-            cust_phone = st.text_input("聯絡電話")
+            c_name = st.text_input("客戶姓名*")
+            c_phone = st.text_input("聯絡電話")
+            c_address = st.text_input("施工地址*")
         with col2:
-            cust_address = st.text_input("施工地址")
-            install_date = st.date_input("預定施工日期", datetime.now())
-            worker = st.text_input("安排師傅")
-            total_price = st.number_input("訂單總金額", min_value=0)
+            c_total = st.number_input("訂單金額", min_value=0)
+            c_paid = st.number_input("已付金額", min_value=0)
+            c_worker = st.selectbox("預計代工師傅", WORKERS)
         
-        order_content = st.text_area("訂購內容")
-        submit = st.form_submit_button("儲存訂單")
-
-        if submit:
-            new_data = {
-                "訂單編號": order_id, "訂單日期": str(order_date),
-                "客戶姓名": cust_name, "電話": cust_phone, "地址": cust_address,
-                "訂購內容": order_content, "總金額": total_price,
-                "施工日期": str(install_date), "施工師傅": worker, "狀態": "已接單"
-            }
-            df = load_data()
-            df = pd.concat([df, pd.DataFrame([new_data])], ignore_index=True)
-            save_data(df)
-            st.success(f"訂單 {order_id} 已儲存！")
-
-# --- 功能 2：施工調度與狀態更新 ---
-elif choice == "施工調度與狀態更新":
-    st.header("🏗️ 施工管理")
-    df = load_data()
-    if not df.empty:
-        # 快速更新狀態
-        st.subheader("快速更新施工狀態")
-        order_to_update = st.selectbox("選擇訂單編號", df["訂單編號"].tolist())
-        new_status = st.selectbox("更改狀態為", ["已接單", "備貨中", "施工中", "已完工", "已收款"])
-        if st.button("更新狀態"):
-            df.loc[df["訂單編號"] == order_to_update, "狀態"] = new_status
-            save_data(df)
-            st.success(f"訂單 {order_to_update} 狀態已更新為 {new_status}")
+        c_content = st.text_area("訂購詳細內容")
         
-        st.divider()
-        st.write("目前所有排程：")
-        st.dataframe(df[["施工日期", "施工師傅", "客戶姓名", "地址", "狀態", "訂單編號"]])
-    else:
-        st.info("尚無訂單。")
+        if st.form_submit_button("✅ 存入客戶資料卡"):
+            if not c_name or not c_address:
+                st.error("姓名與地址為必填項目！")
+            else:
+                new_id = f"ORD{datetime.now().strftime('%m%d%H%M')}"
+                new_row = pd.DataFrame([{
+                    "訂單編號": new_id, "訂單日期": str(datetime.now().date()), "客戶姓名": c_name,
+                    "電話": c_phone, "地址": c_address, "訂購內容": c_content,
+                    "總金額": c_total, "已收金額": c_paid, "師傅工資": 0, "施工狀態": "已接單", "代工師傅": c_worker
+                }])
+                # 存檔前確保移除暫時欄位
+                save_df = pd.concat([df_orders, new_row], ignore_index=True)
+                if '年份' in save_df.columns: save_df = save_df.drop(columns=['年份'])
+                conn.update(worksheet="訂單資料", data=save_df)
+                st.success("客戶已建檔！")
 
-# --- 功能 3：修改/刪除訂單 ---
-elif choice == "修改/刪除訂單":
-    st.header("🛠️ 編輯或刪除現有訂單")
-    df = load_data()
-    if not df.empty:
-        target_id = st.selectbox("選擇要處理的訂單編號", df["訂單編號"].tolist())
-        target_row = df[df["訂單編號"] == target_id].iloc[0]
+# --- 功能 3：財務損益報表 ---
+elif choice == "💰 財務損益報表":
+    pwd = st.text_input("請輸入管理密碼", type="password")
+    if pwd == ADMIN_PASSWORD:
+        st.header("📈 經營損益分析")
+        p_agg = df_purchases.groupby("訂單編號")["進貨金額"].sum().reset_index()
+        report = pd.merge(df_orders, p_agg, on="訂單編號", how="left").fillna(0)
+        report['淨利'] = report['總金額'].astype(float) - report['師傅工資'].astype(float) - report['進貨金額'].astype(float)
 
-        with st.expander("點擊展開 - 修改資料"):
-            with st.form("edit_form"):
-                new_content = st.text_area("訂購內容", value=target_row["訂購內容"])
-                new_price = st.number_input("總金額", value=int(target_row["總金額"]))
-                new_worker = st.text_input("施工師傅", value=target_row["施工師傅"])
-                new_address = st.text_input("地址", value=target_row["地址"])
-                
-                col_save, col_del = st.columns([1, 1])
-                if col_save.form_submit_button("確認修改"):
-                    df.loc[df["訂單編號"] == target_id, ["訂購內容", "總金額", "施工師傅", "地址"]] = [new_content, new_price, new_worker, new_address]
-                    save_data(df)
-                    st.success("資料已更新！")
-                    st.rerun()
-
-        st.divider()
-        if st.button("🚨 刪除此筆訂單 (不可復原)", help="請謹慎使用"):
-            df = df[df["訂單編號"] != target_id]
-            save_data(df)
-            st.warning(f"訂單 {target_id} 已刪除。")
-            st.rerun()
-    else:
-        st.info("尚無資料可修改。")
-
-# --- 功能 4：客戶統計與營業額 ---
-elif choice == "客戶統計與營業額":
-    st.header("📈 數據報表")
-    df = load_data()
-    if not df.empty:
-        total_rev = df["總金額"].sum()
-        st.metric("總營業額 (累積)", f"NT$ {total_rev:,.0f}")
-        
-        st.subheader("客戶資料清單")
-        st.dataframe(df)
-        
-        csv = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-        st.download_button("匯出 Excel 檔 (CSV)", data=csv, file_name="窗簾店客戶資料.csv")
-    else:
-        st.info("尚無營業數據。")
+        st.metric("總淨利", f"${report['淨利'].sum():,.0f}")
+        st.dataframe(report[["客戶姓名", "總金額", "進貨金額", "師傅工資", "淨利", "施工狀態"]])
