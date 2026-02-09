@@ -8,7 +8,7 @@ import re
 st.set_page_config(page_title="窗簾專家管理系統 Pro", layout="wide")
 ADMIN_PASSWORD = "8888"
 
-# 依照工種細分師傅名單
+# 師傅分類名單 (連動的核心資料)
 WORKER_GROUPS = {
     "窗簾類": ["小淯", "小林", "承暘", "袁大哥", "其他"],
     "壁紙類": ["期", "其他"],
@@ -107,13 +107,22 @@ if choice == "📇 客戶資料卡":
                         s_idx = STATUS_OPTIONS.index(client_order['施工狀態']) if client_order['施工狀態'] in STATUS_OPTIONS else 0
                         u_status = st.selectbox("施工進度", STATUS_OPTIONS, index=s_idx)
                     with col2:
+                        # --- 施工類別與師傅連動 (修改區) ---
                         old_cat = client_order['施工類別'] if client_order['施工類別'] in WORKER_GROUPS else "窗簾類"
                         u_cat = st.selectbox("施工類別", list(WORKER_GROUPS.keys()), index=list(WORKER_GROUPS.keys()).index(old_cat))
-                        u_worker = st.selectbox("代工師傅", WORKER_GROUPS[u_cat], 
-                                               index=WORKER_GROUPS[u_cat].index(client_order['代工師傅']) if client_order['代工師傅'] in WORKER_GROUPS[u_cat] else 0)
+                        
+                        # 根據上面選擇的 u_cat，動態決定師傅選單內容
+                        current_worker_list = WORKER_GROUPS[u_cat]
+                        try:
+                            w_idx = current_worker_list.index(client_order['代工師傅'])
+                        except ValueError:
+                            w_idx = 0
+                            
+                        u_worker = st.selectbox("代工師傅", current_worker_list, index=w_idx)
                         u_wage = st.number_input("師傅工資", value=int(client_order['師傅工資']), step=1)
                         u_total = st.number_input("總金額", value=int(client_order['總金額']), step=1)
                         u_paid = st.number_input("已收金額", value=int(client_order['已收金額']), step=1)
+                        
                     u_content = st.text_area("訂購內容", value=str(client_order['訂購內容']))
                     
                     if st.form_submit_button("✅ 儲存資料修改"):
@@ -155,8 +164,12 @@ elif choice == "➕ 新增客戶訂單":
             n_phone = st.text_input("聯絡電話")
             n_addr = st.text_input("施工地址*")
         with col2:
+            # --- 施工類別與師傅連動 (新增區) ---
             n_cat = st.selectbox("施工類別", list(WORKER_GROUPS.keys()))
+            
+            # 此選單會根據上方 n_cat 的選擇動態呈現
             n_worker = st.selectbox("指定師傅", WORKER_GROUPS[n_cat])
+            
             n_wage = st.number_input("師傅工資", min_value=0, step=1)
             n_total = st.number_input("總金額", min_value=0, step=1)
             n_paid = st.number_input("訂金", min_value=0, step=1)
@@ -215,4 +228,4 @@ elif choice == "💰 損益與採購分析":
         
         st.divider()
         st.subheader("📝 客戶損益明細")
-        st.dataframe(monthly_rpt[["訂單編號", "客戶姓名", "總金額", "進貨金額", "師傅工資", "淨利", "施工狀態"]].style.format({"總金額": "{:,.0f}", "進貨金額": "{:,.0f}", "師傅工資": "{:,.0f}", "淨利": "{:,.0f}"}))
+        st.dataframe(monthly_rpt[["訂單編號", "客戶姓名", "總金額", "進貨金額", "師傅工資", "淨利", "施工狀態", "代工師傅"]].style.format({"總金額": "{:,.0f}", "進貨金額": "{:,.0f}", "師傅工資": "{:,.0f}", "淨利": "{:,.0f}"}))
