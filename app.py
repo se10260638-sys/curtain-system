@@ -3,7 +3,7 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 
-# --- 1. 基本設定與師傅名單 ---
+# --- 1. 基本設定與連動清單 ---
 st.set_page_config(page_title="窗簾專家管理系統 Pro", layout="wide")
 ADMIN_PASSWORD = "8888"
 
@@ -16,23 +16,21 @@ WORKER_GROUPS = {
     "其他施工": ["其他"]
 }
 
-# 廠商資料
+# 廠商分類名單
 VENDOR_DATA = {
     "窗簾布類": ["大晉", "創世紀", "可愛", "程祥", "聚合", "萊茵", "海淇", "凱薩", "德克力", "施小姐"],
     "捲簾五金類": ["彩樺", "和發", "大晉", "萊茵", "可愛", "高仕", "大瀚", "將元", "宏易", "莊小姐"],
     "壁紙類": ["竑美", "優格", "全球", "高仕"],
     "地磚地毯類": ["旺宏", "皇家", "三凱", "富銘"],
-    "師傅工資": ["(請由下方選單選擇)"], 
-    "其他": ["其他"]
+    "其他項目": ["其他"]
 }
 
 STATUS_OPTIONS = ["已接單", "備貨中", "施工中", "已完工", "已結案"]
 
-# --- 2. 資料連線與格式清洗邏輯 ---
+# --- 2. 資料處理 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def clean_id(val):
-    """處理 Google Sheets 常見的編號格式問題"""
     if pd.isna(val) or val == "": return ""
     s = str(val).strip()
     if s.endswith('.0'): s = s[:-2]
@@ -48,44 +46,31 @@ def load_data(sheet_name, cols):
         if df is None or df.empty: return pd.DataFrame(columns=cols)
         for col in cols:
             if col not in df.columns: df[col] = ""
-        # 強制清洗編號格式
-        if "訂單編號" in df.columns:
-            df["訂單編號"] = df["訂單編號"].apply(clean_id)
+        if "訂單編號" in df.columns: df["訂單編號"] = df["訂單編號"].apply(clean_id)
         return df
-    except:
-        return pd.DataFrame(columns=cols)
+    except: return pd.DataFrame(columns=cols)
 
-# 載入主表與明細
-df_orders = load_data("訂單資料", ["訂單編號", "訂單日期", "客戶姓名", "電話", "地址", "訂購內容", "總金額", "已收金額", "施工狀態"])
+df_orders = load_data("訂單資料", ["訂單編號", "訂單日期", "客戶姓名", "地址", "總金額", "已收金額", "施工狀態"])
 df_details = load_data("採購明細", ["訂單編號", "類別", "項目名稱", "金額", "日期", "備註"])
 
-# 金額處理
 df_orders['總金額'] = df_orders['總金額'].apply(to_int)
 df_orders['已收金額'] = df_orders['已收金額'].apply(to_int)
 df_details['金額'] = df_details['金額'].apply(to_int)
-if not df_details.empty:
-    df_details["訂單編號"] = df_details["訂單編號"].apply(clean_id)
+if not df_details.empty: df_details["訂單編號"] = df_details["訂單編號"].apply(clean_id)
 
-# --- 3. 介面導覽 ---
+# --- 3. 主介面 ---
 st.sidebar.title("🏮 窗簾經營管理中心")
 choice = st.sidebar.selectbox("功能選單", ["📇 客戶資料與明細", "➕ 新增客戶訂單", "💰 損益與清款報表"])
 
-# --- 功能 1：客戶資料與明細 ---
 if choice == "📇 客戶資料與明細":
     st.header("📇 客戶資料與施工明細")
     if not df_orders.empty:
         search_list = df_orders.apply(lambda r: f"{r['客戶姓名']} | {r['地址']} |ID| {r['訂單編號']}", axis=1).tolist()
         sel_str = st.selectbox("🔍 搜尋客戶：", search_list)
-        
-        # 提取編號並再次清洗
         target_oid = clean_id(sel_str.split("|ID|")[-1])
-        
-        # 搜尋資料並增加檢查
         matches = df_orders[df_orders["訂單編號"] == target_oid]
         
-        if matches.empty:
-            st.error(f"找不到訂單編號: {target_oid}，請確認試算表內編號是否正確。")
-        else:
+        if not matches.empty:
             order_idx = matches.index[0]
             curr_order = df_orders.loc[order_idx]
 
@@ -103,39 +88,44 @@ if choice == "📇 客戶資料與明細":
                     st.success("基本資料已更新"); st.rerun()
 
             st.divider()
-            st.subheader("📋 施工與叫貨明細 (含師傅工資)")
+            st.subheader("📋 施工與叫貨明細")
             sub_df = df_details[df_details["訂單編號"] == target_oid]
             if not sub_df.empty:
                 st.table(sub_df[["類別", "項目名稱", "金額", "日期", "備註"]].assign(金額=lambda x: x['金額'].map('{:,.0f}'.format)))
             
-            with st.expander("➕ 新增明細項目 (叫貨 或 師傅工資)"):
-                item_type = st.radio("請選擇新增類型：", ["廠商叫貨", "師傅工資"], horizontal=True)
-                with st.form("add_detail_form", clear_on_submit=True):
-                    if item_type == "廠商叫貨":
-                        cat = st.selectbox("材料類別", [k for k in VENDOR_DATA.keys() if k != "師傅工資"])
-                        name = st.selectbox("廠商名稱", VENDOR_DATA[cat] + ["其他"])
-                        final_name = name if name != "其他" else st.text_input("手寫廠商名")
-                    else:
-                        work_cat = st.selectbox("施工工種", list(WORKER_GROUPS.keys()))
-                        final_name = st.selectbox("施工師傅", WORKER_GROUPS[work_cat])
-                        cat = "師傅工資"
-                    
-                    amt = st.number_input("金額", min_value=0, step=1)
-                    dt = st.date_input("日期", value=datetime.now())
-                    note = st.text_input("備註")
-                    
-                    if st.form_submit_button("➕ 加入明細"):
-                        new_item = pd.DataFrame([{"訂單編號": target_oid, "類別": cat, "項目名稱": final_name, "金額": int(amt), "日期": str(dt), "備註": note}])
-                        conn.update(worksheet="採購明細", data=pd.concat([df_details, new_item], ignore_index=True))
-                        st.success(f"已記錄 {final_name} 的項目"); st.rerun()
-    else:
-        st.info("尚無客戶資料，請先新增訂單。")
+            # --- 核心連動區塊 ---
+            st.write("### ➕ 新增明細項目")
+            item_type = st.radio("類型：", ["廠商叫貨", "師傅工資"], horizontal=True)
+            
+            if item_type == "廠商叫貨":
+                # 材料連動
+                sel_cat = st.selectbox("1. 選擇材料類別", list(VENDOR_DATA.keys()))
+                sel_list = VENDOR_DATA[sel_cat]
+            else:
+                # 師傅連動
+                sel_cat = st.selectbox("1. 選擇施工工種", list(WORKER_GROUPS.keys()))
+                sel_list = WORKER_GROUPS[sel_cat]
 
-# --- 其餘功能 (新增訂單 & 報表) 保留原邏輯 ---
+            # 真正的新增表單
+            with st.form("add_detail_form", clear_on_submit=True):
+                final_name = st.selectbox("2. 選擇名稱 (廠商或師傅)", sel_list + ["其他"])
+                if final_name == "其他":
+                    final_name = st.text_input("手動輸入名稱")
+                
+                amt = st.number_input("金額", min_value=0, step=1)
+                dt = st.date_input("日期", value=datetime.now())
+                note = st.text_input("備註")
+                
+                if st.form_submit_button("➕ 加入明細"):
+                    save_cat = "師傅工資" if item_type == "師傅工資" else sel_cat
+                    new_item = pd.DataFrame([{"訂單編號": target_oid, "類別": save_cat, "項目名稱": final_name, "金額": int(amt), "日期": str(dt), "備註": note}])
+                    conn.update(worksheet="採購明細", data=pd.concat([df_details, new_item], ignore_index=True))
+                    st.success(f"已登記項目"); st.rerun()
+
 elif choice == "➕ 新增客戶訂單":
     st.header("📋 新建立訂單")
     with st.form("new_order"):
-        oid = st.text_input("訂單編號 (單號)*", value=f"ORD{datetime.now().strftime('%m%d%H%M')}")
+        oid = st.text_input("訂單編號*", value=f"ORD{datetime.now().strftime('%m%d%H%M')}")
         n_name = st.text_input("客戶姓名*")
         n_addr = st.text_input("地址*")
         n_total = st.number_input("合約總額", min_value=0)
@@ -148,12 +138,11 @@ elif choice == "💰 損益與清款報表":
     pwd = st.text_input("密碼", type="password")
     if pwd == ADMIN_PASSWORD:
         st.header("📊 經營分析報表")
-        st.subheader("👷 師傅工資清款統計")
+        st.subheader("👷 師傅工資統計")
         worker_df = df_details[df_details["類別"] == "師傅工資"]
         if not worker_df.empty:
-            summary = worker_df.groupby("項目名稱")["金額"].sum().reset_index().rename(columns={"項目名稱": "師傅姓名", "金額": "本月累計應付"})
-            st.dataframe(summary.style.format({"本月累計應付": "${:,.0f}"}), use_container_width=True)
-        
+            summary = worker_df.groupby("項目名稱")["金額"].sum().reset_index().rename(columns={"項目名稱": "師傅姓名", "金額": "累計應付"})
+            st.dataframe(summary.style.format({"累計應付": "${:,.0f}"}), use_container_width=True)
         st.divider()
         st.subheader("📈 損益一覽")
         cost_sum = df_details.groupby("訂單編號")["金額"].sum().reset_index().rename(columns={"金額": "總支出"})
