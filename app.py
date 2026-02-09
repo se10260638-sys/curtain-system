@@ -8,7 +8,7 @@ import re
 st.set_page_config(page_title="窗簾專家管理系統 Pro", layout="wide")
 ADMIN_PASSWORD = "8888"
 
-# 師傅分類名單 (連動的核心資料)
+# 師傅分類名單
 WORKER_GROUPS = {
     "窗簾類": ["小淯", "小林", "承暘", "袁大哥", "其他"],
     "壁紙類": ["期", "其他"],
@@ -53,11 +53,9 @@ def load_data(sheet_name, cols):
     except:
         return pd.DataFrame(columns=cols)
 
-# 載入資料
 df_orders = load_data("訂單資料", ["訂單編號", "訂單日期", "客戶姓名", "電話", "地址", "訂購內容", "總金額", "已收金額", "師傅工資", "施工狀態", "代工師傅", "施工類別"])
 df_purchases = load_data("採購明細", ["訂單編號", "廠商類型", "廠商名稱", "進貨金額", "叫貨日期", "備註"])
 
-# 格式轉換
 df_orders['總金額'] = df_orders['總金額'].apply(to_int)
 df_orders['已收金額'] = df_orders['已收金額'].apply(to_int)
 df_orders['師傅工資'] = df_orders['師傅工資'].apply(to_int)
@@ -78,9 +76,9 @@ if choice == "📇 客戶資料卡":
         st.info("目前尚無資料。")
     else:
         years = sorted(df_orders['年份'].unique().tolist(), reverse=True)
-        sel_year = st.sidebar.selectbox("選擇年份", years)
+        sel_year = st.sidebar.selectbox("年份篩選", years)
         months = sorted(df_orders[df_orders['年份'] == sel_year]['月份'].unique().tolist(), reverse=True)
-        sel_month = st.sidebar.selectbox("選擇月份", months)
+        sel_month = st.sidebar.selectbox("月份篩選", months)
         
         filtered_df = df_orders[(df_orders['年份'] == sel_year) & (df_orders['月份'] == sel_month)]
         
@@ -96,8 +94,14 @@ if choice == "📇 客戶資料卡":
                 client_order = matches.iloc[0]
                 main_idx = matches.index[0]
 
+                st.subheader(f"🛠️ 編輯訂單: {target_oid}")
+                
+                # 將類別移出 Form 以達到連動效果
+                old_cat = client_order['施工類別'] if client_order['施工類別'] in WORKER_GROUPS else "窗簾類"
+                u_cat = st.selectbox("1. 施工類別 (更改後下方名單會連動)", list(WORKER_GROUPS.keys()), 
+                                    index=list(WORKER_GROUPS.keys()).index(old_cat), key="edit_cat")
+
                 with st.form("edit_order_form"):
-                    st.subheader(f"🛠️ 修改訂單: {target_oid}")
                     new_date = st.date_input("訂單日期", value=client_order['訂單日期'])
                     col1, col2 = st.columns(2)
                     with col1:
@@ -107,22 +111,15 @@ if choice == "📇 客戶資料卡":
                         s_idx = STATUS_OPTIONS.index(client_order['施工狀態']) if client_order['施工狀態'] in STATUS_OPTIONS else 0
                         u_status = st.selectbox("施工進度", STATUS_OPTIONS, index=s_idx)
                     with col2:
-                        # --- 施工類別與師傅連動 (修改區) ---
-                        old_cat = client_order['施工類別'] if client_order['施工類別'] in WORKER_GROUPS else "窗簾類"
-                        u_cat = st.selectbox("施工類別", list(WORKER_GROUPS.keys()), index=list(WORKER_GROUPS.keys()).index(old_cat))
-                        
-                        # 根據上面選擇的 u_cat，動態決定師傅選單內容
                         current_worker_list = WORKER_GROUPS[u_cat]
                         try:
                             w_idx = current_worker_list.index(client_order['代工師傅'])
                         except ValueError:
                             w_idx = 0
-                            
-                        u_worker = st.selectbox("代工師傅", current_worker_list, index=w_idx)
+                        u_worker = st.selectbox("2. 代工師傅", current_worker_list, index=w_idx)
                         u_wage = st.number_input("師傅工資", value=int(client_order['師傅工資']), step=1)
                         u_total = st.number_input("總金額", value=int(client_order['總金額']), step=1)
                         u_paid = st.number_input("已收金額", value=int(client_order['已收金額']), step=1)
-                        
                     u_content = st.text_area("訂購內容", value=str(client_order['訂購內容']))
                     
                     if st.form_submit_button("✅ 儲存資料修改"):
@@ -154,6 +151,10 @@ if choice == "📇 客戶資料卡":
 # --- 功能 2：新增客戶訂單 ---
 elif choice == "➕ 新增客戶訂單":
     st.header("📋 建立新客戶資料")
+    
+    # 將類別移出 Form 以達到連動效果
+    n_cat = st.selectbox("1. 施工類別 (請先選類別再填表)", list(WORKER_GROUPS.keys()), key="add_cat")
+    
     with st.form("new_order_form", clear_on_submit=True):
         n_date = st.date_input("訂單日期", value=datetime.now())
         oid = st.text_input("訂單編號 (手寫單號)*", value=f"ORD{datetime.now().strftime('%m%d%H%M')}")
@@ -164,12 +165,7 @@ elif choice == "➕ 新增客戶訂單":
             n_phone = st.text_input("聯絡電話")
             n_addr = st.text_input("施工地址*")
         with col2:
-            # --- 施工類別與師傅連動 (新增區) ---
-            n_cat = st.selectbox("施工類別", list(WORKER_GROUPS.keys()))
-            
-            # 此選單會根據上方 n_cat 的選擇動態呈現
-            n_worker = st.selectbox("指定師傅", WORKER_GROUPS[n_cat])
-            
+            n_worker = st.selectbox("2. 指定師傅", WORKER_GROUPS[n_cat])
             n_wage = st.number_input("師傅工資", min_value=0, step=1)
             n_total = st.number_input("總金額", min_value=0, step=1)
             n_paid = st.number_input("訂金", min_value=0, step=1)
@@ -178,7 +174,7 @@ elif choice == "➕ 新增客戶訂單":
         
         if st.form_submit_button("✅ 儲存建檔"):
             if not n_name or not n_addr or not oid:
-                st.error("必填項未填！")
+                st.error("姓名、地址與編號為必填項！")
             else:
                 new_row = pd.DataFrame([{
                     "訂單編號": str(oid), "訂單日期": str(n_date), "客戶姓名": n_name, "電話": str(n_phone), "地址": n_addr, 
