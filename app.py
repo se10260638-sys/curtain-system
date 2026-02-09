@@ -41,15 +41,15 @@ def to_int(val):
 def load_all():
     df_o = conn.read(worksheet="訂單資料", ttl=0)
     df_d = conn.read(worksheet="採購明細", ttl=0)
-    # 清洗與補齊欄位
-    for df in [df_o, df_d]:
-        if "訂單編號" in df.columns: df["訂單編號"] = df["訂單編號"].apply(clean_id)
+    if "訂單編號" in df_o.columns: df_o["訂單編號"] = df_o["訂單編號"].apply(clean_id)
+    if "訂單編號" in df_d.columns: df_d["訂單編號"] = df_d["訂單編號"].apply(clean_id)
     if "金額" in df_d.columns: df_d["金額"] = df_d["金額"].apply(to_int)
     return df_o, df_d
 
 df_orders, df_details = load_all()
 
 # --- 3. 主選單 ---
+st.sidebar.title("🏮 窗簾經營管理中心")
 choice = st.sidebar.selectbox("功能選單", ["📇 客戶資料與明細管理", "➕ 新增客戶訂單", "💰 損益與報表中心"])
 
 # --- 功能 1：管理與修改 ---
@@ -93,7 +93,7 @@ if choice == "📇 客戶資料與明細管理":
                 new_note = col_e2.text_input("修改備註", value=str(df_details.loc[row_idx, '備註']))
                 
                 c_del1, c_del2 = st.columns(2)
-                if c_del1.button("💾 確認修改金額/備註"):
+                if c_del1.button("💾 確認修改金額"):
                     df_details.loc[row_idx, ['金額', '備註']] = [new_amt, new_note]
                     conn.update(worksheet="採購明細", data=df_details)
                     st.success("明細已修改"); st.rerun()
@@ -138,35 +138,48 @@ elif choice == "➕ 新增客戶訂單":
             conn.update(worksheet="訂單資料", data=pd.concat([df_orders, new_order], ignore_index=True))
             st.success("訂單已建立！")
 
-# --- 功能 3：損益表整合 ---
+# --- 功能 3：回歸原本表格版損益表 ---
 elif choice == "💰 損益與報表中心":
     pwd = st.text_input("管理密碼", type="password")
     if pwd == ADMIN_PASSWORD:
-        st.header("📊 損益與支出明細報表")
+        st.header("📊 經營損益報表")
         
-        # 統計支出
+        # 統計每筆訂單的總支出（含叫貨與工資）
         cost_sum = df_details.groupby("訂單編號")["金額"].sum().reset_index().rename(columns={"金額": "總支出"})
         final_rpt = pd.merge(df_orders, cost_sum, on="訂單編號", how="left").fillna(0)
         final_rpt["淨利"] = final_rpt["總金額"].apply(to_int) - final_rpt["總支出"]
         
-        # 顯示損益清單
-        for _, row in final_rpt.iterrows():
-            with st.expander(f"📌 {row['客戶姓名']} | 淨利: ${int(row['淨利']):,.0f} | 狀態: {row['施工狀態']}"):
-                c1, c2, c3 = st.columns(3)
-                c1.metric("合約金額", f"${int(row['總金額']):,.0f}")
-                c2.metric("總支出", f"${int(row['總支出']):,.0f}")
-                c3.metric("淨利", f"${int(row['淨利']):,.0f}")
-                
-                st.write("**🔍 此單詳細支出明細：**")
-                this_detail = df_details[df_details["訂單編號"] == row["訂單編號"]]
-                if not this_detail.empty:
-                    st.dataframe(this_detail[["日期", "類別", "項目名稱", "金額", "備註"]], use_container_width=True)
-                else:
-                    st.info("此單尚無支出明細。")
+        # 顯示全體損益表格
+        st.subheader("📈 全體訂單損益一覽")
+        st.dataframe(
+            final_rpt[["訂單編號", "客戶姓名", "總金額", "總支出", "淨利", "施工狀態"]].style.format({
+                "總金額": "${:,.0f}", 
+                "總支出": "${:,.0f}", 
+                "淨利": "${:,.0f}"
+            }), 
+            use_container_width=True
+        )
 
         st.divider()
+        
+        # 師傅工資統計
         st.subheader("👷 師傅應付工資匯總")
         worker_df = df_details[df_details["類別"] == "師傅工資"]
         if not worker_df.empty:
             summary = worker_df.groupby("項目名稱")["金額"].sum().reset_index().rename(columns={"項目名稱": "師傅姓名", "金額": "累計應付"})
             st.dataframe(summary.style.format({"累計應付": "${:,.0f}"}), use_container_width=True)
+        else:
+            st.info("尚無師傅工資記錄。")
+            
+        st.divider()
+        
+        # 單筆明細查詢（可選）
+        st.subheader("🔍 單筆支出明細查詢")
+        client_list = df_orders.apply(lambda r: f"{r['客戶姓名']} | {r['訂單編號']}", axis=1).tolist()
+        sel_client = st.selectbox("選擇客戶查看詳細支出：", client_list)
+        target_oid = clean_id(sel_client.split(" | ")[-1])
+        this_detail = df_details[df_details["訂單編號"] == target_oid]
+        if not this_detail.empty:
+            st.table(this_detail[["日期", "類別", "項目名稱", "金額", "備註"]].assign(金額=lambda x: x['金額'].map('{:,.0f}'.format)))
+        else:
+            st.info("此單尚無支出紀錄。")
