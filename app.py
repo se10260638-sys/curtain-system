@@ -2,12 +2,13 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
+import re
 
 # --- 1. 基本設定與專業師傅名單 ---
 st.set_page_config(page_title="窗簾專家管理系統 Pro", layout="wide")
 ADMIN_PASSWORD = "8888"
 
-# 依照類別細分師傅名單
+# 依照工種細分師傅名單 (完全對應老闆要求)
 WORKER_GROUPS = {
     "窗簾類": ["小淯", "小林", "承暘", "袁大哥", "其他"],
     "壁紙類": ["期", "其他"],
@@ -27,16 +28,18 @@ VENDOR_DATA = {
 
 STATUS_OPTIONS = ["已接單", "備貨中", "施工中", "已完工", "已結案"]
 
-# --- 2. 連線與讀取 ---
+# --- 2. 雲端連線與資料讀取 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def fix_format(val):
+    """處理 Google Sheets 自動產生的 .0 問題"""
     if pd.isna(val) or val == "": return ""
     s = str(val).strip()
     if s.endswith('.0'): s = s[:-2]
     return s
 
 def to_int(val):
+    """確保金額為整數"""
     try: return int(pd.to_numeric(val, errors='coerce') or 0)
     except: return 0
 
@@ -52,17 +55,17 @@ def load_data(sheet_name, cols):
     except:
         return pd.DataFrame(columns=cols)
 
-# 讀取資料
+# 讀取主表
 df_orders = load_data("訂單資料", ["訂單編號", "訂單日期", "客戶姓名", "電話", "地址", "訂購內容", "總金額", "已收金額", "師傅工資", "施工狀態", "代工師傅", "施工類別"])
 df_purchases = load_data("採購明細", ["訂單編號", "廠商類型", "廠商名稱", "進貨金額", "叫貨日期", "備註"])
 
-# 強制整數化
+# 強制數值轉換
 df_orders['總金額'] = df_orders['總金額'].apply(to_int)
 df_orders['已收金額'] = df_orders['已收金額'].apply(to_int)
 df_orders['師傅工資'] = df_orders['師傅工資'].apply(to_int)
 df_purchases['進貨金額'] = df_purchases['進貨金額'].apply(to_int)
 
-# 日期處理
+# 日期處理與建立年月索引
 df_orders['訂單日期'] = pd.to_datetime(df_orders['訂單日期'], errors='coerce')
 df_orders['年份'] = df_orders['訂單日期'].dt.year.fillna(datetime.now().year).astype(int)
 df_orders['月份'] = df_orders['訂單日期'].dt.month.fillna(datetime.now().month).astype(int)
@@ -78,14 +81,14 @@ if choice == "📇 客戶資料卡":
         st.info("目前尚無資料。")
     else:
         years = sorted(df_orders['年份'].unique().tolist(), reverse=True)
-        sel_year = st.sidebar.selectbox("年份", years)
+        sel_year = st.sidebar.selectbox("選擇年份", years)
         months = sorted(df_orders[df_orders['年份'] == sel_year]['月份'].unique().tolist(), reverse=True)
-        sel_month = st.sidebar.selectbox("月份", months)
+        sel_month = st.sidebar.selectbox("選擇月份", months)
         
         filtered_df = df_orders[(df_orders['年份'] == sel_year) & (df_orders['月份'] == sel_month)]
         
         if filtered_df.empty:
-            st.warning(f"{sel_year} 年 {sel_month} 月無資料。")
+            st.warning(f"⚠️ {sel_year}年{sel_month}月無資料。")
         else:
             search_list = filtered_df.apply(lambda r: f"{r['客戶姓名']} | {r['地址']} |ID|{r['訂單編號']}", axis=1).tolist()
             sel_client_str = st.selectbox("🔍 請選擇客戶：", search_list)
@@ -104,10 +107,10 @@ if choice == "📇 客戶資料卡":
                         u_name = st.text_input("客戶姓名", value=str(client_order['客戶姓名']))
                         u_phone = st.text_input("聯絡電話", value=str(client_order['電話']))
                         u_addr = st.text_input("施工地址", value=str(client_order['地址']))
-                        s_idx = STATUS_OPTIONS.index(client_order['施工狀態']) if client_order['施工狀態'] in STATUS_OPTIONS else 0
-                        u_status = st.selectbox("施工進度", STATUS_OPTIONS, index=s_idx)
+                        st_idx = STATUS_OPTIONS.index(client_order['施工狀態']) if client_order['施工狀態'] in STATUS_OPTIONS else 0
+                        u_status = st.selectbox("施工進度", STATUS_OPTIONS, index=st_idx)
                     with c2:
-                        # 師傅分類連動修改
+                        # --- 師傅分類連動 ---
                         old_cat = client_order['施工類別'] if client_order['施工類別'] in WORKER_GROUPS else "窗簾類"
                         u_cat = st.selectbox("施工類別", list(WORKER_GROUPS.keys()), index=list(WORKER_GROUPS.keys()).index(old_cat))
                         u_worker = st.selectbox("代工師傅", WORKER_GROUPS[u_cat], 
@@ -154,10 +157,11 @@ elif choice == "➕ 新增客戶訂單":
             n_name = st.text_input("客戶姓名*")
             n_phone = st.text_input("聯絡電話")
             n_addr = st.text_input("施工地址*")
-        with c2:
+        with col2:
+            # --- 師傅分類連動 (核心邏輯) ---
             n_cat = st.selectbox("施工類別", list(WORKER_GROUPS.keys()))
             n_worker = st.selectbox("指定師傅", WORKER_GROUPS[n_cat])
-            n_wage = st.number_input("預估工資", min_value=0, step=1)
+            n_wage = st.number_input("師傅工資", min_value=0, step=1)
             n_total = st.number_input("總金額", min_value=0, step=1)
             n_paid = st.number_input("訂金", min_value=0, step=1)
         
@@ -183,44 +187,46 @@ elif choice == "💰 損益與採購分析":
     if pwd == ADMIN_PASSWORD:
         st.header("📊 經營分析報表")
         
+        # 報表月份切換
         col_y, col_m = st.columns(2)
         rpt_y = col_y.selectbox("報表年份", sorted(df_orders['年份'].unique().tolist(), reverse=True))
         rpt_m = col_m.selectbox("報表月份", list(range(1, 13)), index=datetime.now().month-1)
         
-        # 建立當月資料
+        # 整合資料
         p_sum = df_purchases.groupby("訂單編號")["進貨金額"].sum().reset_index()
         p_sum["訂單編號"] = p_sum["訂單編號"].apply(fix_format)
         full_rpt = pd.merge(df_orders, p_sum, on="訂單編號", how="left").fillna(0)
         full_rpt['淨利'] = full_rpt['總金額'] - full_rpt['師傅工資'] - full_rpt['進貨金額']
         
+        # 過濾該月資料
         monthly_rpt = full_rpt[(full_rpt['年份'] == rpt_y) & (full_rpt['月份'] == rpt_m)]
         
         m1, m2, m3 = st.columns(3)
-        m1.metric(f"{rpt_m}月 總業績", f"${int(monthly_rpt['總金額'].sum()):,.0f}")
-        m2.metric(f"{rpt_m}月 總支出(含工資)", f"${int(monthly_rpt['師傅工資'].sum() + monthly_rpt['進貨金額'].sum()):,.0f}")
+        m1.metric(f"{rpt_m}月 總營業額", f"${int(monthly_rpt['總金額'].sum()):,.0f}")
+        m2.metric(f"{rpt_m}月 總支出(材料+工資)", f"${int(monthly_rpt['師傅工資'].sum() + monthly_rpt['進貨金額'].sum()):,.0f}")
         m3.metric(f"{rpt_m}月 總淨利", f"${int(monthly_rpt['淨利'].sum()):,.0f}")
         
         st.divider()
         
         col_a, col_b = st.columns(2)
         with col_a:
-            st.subheader(f"👷 {rpt_m}月 師傅工資清款單")
+            st.subheader(f"👷 {rpt_m}月 師傅請款單")
             if not monthly_rpt.empty:
                 worker_pay = monthly_rpt.groupby("代工師傅")["師傅工資"].sum().reset_index()
                 worker_pay = worker_pay[worker_pay["師傅工資"] > 0].sort_values(by="師傅工資", ascending=False)
                 st.dataframe(worker_pay.style.format({"師傅工資": "${:,.0f}"}), use_container_width=True)
             else:
-                st.write("本月無工資。")
+                st.write("本月無工資支出。")
         
         with col_b:
-            st.subheader(f"🏢 {rpt_m}月 廠商採購統計")
+            st.subheader(f"🏢 {rpt_m}月 廠商叫貨統計")
             df_purchases['叫貨日期'] = pd.to_datetime(df_purchases['叫貨日期'])
             p_filtered = df_purchases[(df_purchases['叫貨日期'].dt.year == rpt_y) & (df_purchases['叫貨日期'].dt.month == rpt_m)]
             if not p_filtered.empty:
                 v_stats = p_filtered.groupby("廠商名稱")["進貨金額"].sum().reset_index().sort_values(by="進貨金額", ascending=False)
                 st.dataframe(v_stats.style.format({"進貨金額": "${:,.0f}"}), use_container_width=True)
             else:
-                st.write("本月無採購。")
+                st.write("本月無叫貨記錄。")
             
         st.divider()
         st.subheader(f"📝 {rpt_m}月 客戶損益明細")
