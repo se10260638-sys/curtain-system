@@ -2,13 +2,11 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
-import re
 
-# --- 1. 基本設定與專業師傅名單 ---
+# --- 1. 基本設定與師傅名單 ---
 st.set_page_config(page_title="窗簾專家管理系統 Pro", layout="wide")
 ADMIN_PASSWORD = "8888"
 
-# 師傅分類名單
 WORKER_GROUPS = {
     "窗簾類": ["小淯", "小林", "承暘", "袁大哥", "其他"],
     "壁紙類": ["期", "其他"],
@@ -22,20 +20,14 @@ VENDOR_DATA = {
     "捲簾五金類": ["彩樺", "和發", "大晉", "萊茵", "可愛", "高仕", "大瀚", "將元", "宏易", "莊小姐"],
     "壁紙類": ["竑美", "優格", "全球", "高仕"],
     "地磚地毯類": ["旺宏", "皇家", "三凱", "富銘"],
-    "木地板": ["其他"],
-    "表布代工": ["禾益"],
+    "師傅工資": ["(請由下方選單選擇)"], # 專供工資記錄使用
+    "其他": ["其他"]
 }
 
 STATUS_OPTIONS = ["已接單", "備貨中", "施工中", "已完工", "已結案"]
 
-# --- 2. 雲端連線與資料讀取 ---
+# --- 2. 資料連線與處理 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-
-def fix_format(val):
-    if pd.isna(val) or val == "": return ""
-    s = str(val).strip()
-    if s.endswith('.0'): s = s[:-2]
-    return s
 
 def to_int(val):
     try: return int(pd.to_numeric(val, errors='coerce') or 0)
@@ -47,181 +39,106 @@ def load_data(sheet_name, cols):
         if df is None or df.empty: return pd.DataFrame(columns=cols)
         for col in cols:
             if col not in df.columns: df[col] = ""
-        if "訂單編號" in df.columns: df["訂單編號"] = df["訂單編號"].apply(fix_format)
-        if "電話" in df.columns: df["電話"] = df["電話"].apply(fix_format)
         return df
     except:
         return pd.DataFrame(columns=cols)
 
-df_orders = load_data("訂單資料", ["訂單編號", "訂單日期", "客戶姓名", "電話", "地址", "訂購內容", "總金額", "已收金額", "師傅工資", "施工狀態", "代工師傅", "施工類別"])
-df_purchases = load_data("採購明細", ["訂單編號", "廠商類型", "廠商名稱", "進貨金額", "叫貨日期", "備註"])
+# 載入主表與明細 (明細現在包含叫貨與工資)
+df_orders = load_data("訂單資料", ["訂單編號", "訂單日期", "客戶姓名", "電話", "地址", "訂購內容", "總金額", "已收金額", "施工狀態"])
+df_details = load_data("採購明細", ["訂單編號", "類別", "項目名稱", "金額", "日期", "備註"])
 
+# 強制金額整數化
 df_orders['總金額'] = df_orders['總金額'].apply(to_int)
 df_orders['已收金額'] = df_orders['已收金額'].apply(to_int)
-df_orders['師傅工資'] = df_orders['師傅工資'].apply(to_int)
-df_purchases['進貨金額'] = df_purchases['進貨金額'].apply(to_int)
+df_details['金額'] = df_details['金額'].apply(to_int)
 
-df_orders['訂單日期'] = pd.to_datetime(df_orders['訂單日期'], errors='coerce')
-df_orders['年份'] = df_orders['訂單日期'].dt.year.fillna(datetime.now().year).astype(int)
-df_orders['月份'] = df_orders['訂單日期'].dt.month.fillna(datetime.now().month).astype(int)
-
-# --- 3. 介面導覽 ---
+# --- 3. 功能導覽 ---
 st.sidebar.title("🏮 窗簾經營管理中心")
-choice = st.sidebar.selectbox("切換功能", ["📇 客戶資料卡", "➕ 新增客戶訂單", "💰 損益與採購分析"])
+choice = st.sidebar.selectbox("功能選單", ["📇 客戶資料與明細", "➕ 新增客戶訂單", "💰 損益與清款報表"])
 
-# --- 功能 1：客戶資料卡 ---
-if choice == "📇 客戶資料卡":
-    st.header("📇 客戶資料管理")
-    if df_orders.empty:
-        st.info("目前尚無資料。")
-    else:
-        years = sorted(df_orders['年份'].unique().tolist(), reverse=True)
-        sel_year = st.sidebar.selectbox("年份篩選", years)
-        months = sorted(df_orders[df_orders['年份'] == sel_year]['月份'].unique().tolist(), reverse=True)
-        sel_month = st.sidebar.selectbox("月份篩選", months)
+# --- 功能 1：客戶資料與明細 (含多師傅工資) ---
+if choice == "📇 客戶資料與明細":
+    st.header("📇 客戶資料與施工明細")
+    if not df_orders.empty:
+        search_list = df_orders.apply(lambda r: f"{r['客戶姓名']} | {r['地址']} |ID|{r['訂單編號']}", axis=1).tolist()
+        sel_str = st.selectbox("🔍 搜尋客戶：", search_list)
+        target_oid = sel_str.split("|ID|")[-1]
+        order_idx = df_orders[df_orders["訂單編號"] == target_oid].index[0]
+        curr_order = df_orders.loc[order_idx]
+
+        with st.form("edit_main"):
+            st.subheader(f"🏠 基本資料: {target_oid}")
+            c1, c2 = st.columns(2)
+            u_name = c1.text_input("客戶姓名", value=curr_order['客戶姓名'])
+            u_addr = c1.text_input("地址", value=curr_order['地址'])
+            u_total = c2.number_input("合約總金額", value=int(curr_order['總金額']))
+            u_paid = c2.number_input("已收金額", value=int(curr_order['已收金額']))
+            u_status = st.selectbox("狀態", STATUS_OPTIONS, index=STATUS_OPTIONS.index(curr_order['施工狀態']) if curr_order['施工狀態'] in STATUS_OPTIONS else 0)
+            if st.form_submit_button("✅ 更新基本資料"):
+                df_orders.loc[order_idx, ["客戶姓名", "地址", "總金額", "已收金額", "施工狀態"]] = [u_name, u_addr, u_total, u_paid, u_status]
+                conn.update(worksheet="訂單資料", data=df_orders)
+                st.success("基本資料已更新"); st.rerun()
+
+        st.divider()
+        st.subheader("📋 施工與叫貨明細 (含師傅工資)")
+        sub_df = df_details[df_details["訂單編號"] == target_oid]
+        if not sub_df.empty:
+            st.table(sub_df[["類別", "項目名稱", "金額", "日期", "備註"]].assign(金額=lambda x: x['金額'].map('{:,.0f}'.format)))
         
-        filtered_df = df_orders[(df_orders['年份'] == sel_year) & (df_orders['月份'] == sel_month)]
-        
-        if filtered_df.empty:
-            st.warning(f"{sel_year}年{sel_month}月無資料。")
-        else:
-            search_list = filtered_df.apply(lambda r: f"{r['客戶姓名']} | {r['地址']} |ID|{r['訂單編號']}", axis=1).tolist()
-            sel_client_str = st.selectbox("🔍 請選擇客戶：", search_list)
-            target_oid = sel_client_str.split("|ID|")[-1] 
-            matches = df_orders[df_orders["訂單編號"] == target_oid]
+        # 這裡是關鍵：將工資和叫貨整合在一起
+        with st.expander("➕ 新增明細項目 (叫貨 或 師傅工資)"):
+            item_type = st.radio("請選擇新增類型：", ["廠商叫貨", "師傅工資"], horizontal=True)
             
-            if not matches.empty:
-                client_order = matches.iloc[0]
-                main_idx = matches.index[0]
-
-                st.subheader(f"🛠️ 編輯訂單: {target_oid}")
+            with st.form("add_detail_form", clear_on_submit=True):
+                if item_type == "廠商叫貨":
+                    cat = st.selectbox("材料類別", [k for k in VENDOR_DATA.keys() if k != "師師工資"])
+                    name = st.selectbox("廠商名稱", VENDOR_DATA[cat] + ["其他"])
+                    final_name = name if name != "其他" else st.text_input("手寫廠商名")
+                else:
+                    work_cat = st.selectbox("施工工種", list(WORKER_GROUPS.keys()))
+                    final_name = st.selectbox("施工師傅", WORKER_GROUPS[work_cat])
+                    cat = "師傅工資"
                 
-                # 將類別移出 Form 以達到連動效果
-                old_cat = client_order['施工類別'] if client_order['施工類別'] in WORKER_GROUPS else "窗簾類"
-                u_cat = st.selectbox("1. 施工類別 (更改後下方名單會連動)", list(WORKER_GROUPS.keys()), 
-                                    index=list(WORKER_GROUPS.keys()).index(old_cat), key="edit_cat")
-
-                with st.form("edit_order_form"):
-                    new_date = st.date_input("訂單日期", value=client_order['訂單日期'])
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        u_name = st.text_input("客戶姓名", value=str(client_order['客戶姓名']))
-                        u_phone = st.text_input("聯絡電話", value=str(client_order['電話']))
-                        u_addr = st.text_input("施工地址", value=str(client_order['地址']))
-                        s_idx = STATUS_OPTIONS.index(client_order['施工狀態']) if client_order['施工狀態'] in STATUS_OPTIONS else 0
-                        u_status = st.selectbox("施工進度", STATUS_OPTIONS, index=s_idx)
-                    with col2:
-                        current_worker_list = WORKER_GROUPS[u_cat]
-                        try:
-                            w_idx = current_worker_list.index(client_order['代工師傅'])
-                        except ValueError:
-                            w_idx = 0
-                        u_worker = st.selectbox("2. 代工師傅", current_worker_list, index=w_idx)
-                        u_wage = st.number_input("師傅工資", value=int(client_order['師傅工資']), step=1)
-                        u_total = st.number_input("總金額", value=int(client_order['總金額']), step=1)
-                        u_paid = st.number_input("已收金額", value=int(client_order['已收金額']), step=1)
-                    u_content = st.text_area("訂購內容", value=str(client_order['訂購內容']))
-                    
-                    if st.form_submit_button("✅ 儲存資料修改"):
-                        df_orders.loc[main_idx, ["訂單日期", "客戶姓名", "電話", "地址", "施工狀態", "總金額", "已收金額", "師傅工資", "代工師傅", "訂購內容", "施工類別"]] = \
-                            [str(new_date), u_name, str(u_phone), u_addr, u_status, int(u_total), int(u_paid), int(u_wage), u_worker, u_content, u_cat]
-                        df_save = df_orders.drop(columns=['年份', '月份']).copy()
-                        df_save['訂單日期'] = pd.to_datetime(df_save['訂單日期']).dt.strftime('%Y-%m-%d')
-                        conn.update(worksheet="訂單資料", data=df_save)
-                        st.success("更新成功！"); st.rerun()
-
-                st.divider()
-                st.subheader("📦 叫貨明細")
-                this_p = df_purchases[df_purchases["訂單編號"] == target_oid].reset_index()
-                if not this_p.empty:
-                    st.table(this_p[["廠商類型", "廠商名稱", "進貨金額", "叫貨日期", "備註"]].assign(進貨金額=lambda x: x['進貨金額'].map('{:,.0f}'.format)))
+                amt = st.number_input("金額", min_value=0, step=1)
+                dt = st.date_input("日期", value=datetime.now())
+                note = st.text_input("備註")
                 
-                with st.expander("➕ 新增叫貨記錄"):
-                    with st.form("add_purchase_form", clear_on_submit=True):
-                        p_t = st.selectbox("類別", list(VENDOR_DATA.keys()))
-                        p_v = st.selectbox("廠商", VENDOR_DATA[p_t] + ["其他"])
-                        final_v = p_v if p_v != "其他" else st.text_input("輸入名稱")
-                        p_c = st.number_input("金額", min_value=0, step=1)
-                        p_d = st.date_input("日期", value=datetime.now())
-                        if st.form_submit_button("確認新增叫貨"):
-                            new_p = pd.DataFrame([{"訂單編號": target_oid, "廠商類型": p_t, "廠商名稱": final_v, "進貨金額": int(p_c), "叫貨日期": str(p_d), "備註": ""}])
-                            conn.update(worksheet="採購明細", data=pd.concat([df_purchases, new_p], ignore_index=True))
-                            st.success("叫貨已登記！"); st.rerun()
+                if st.form_submit_button("➕ 加入明細"):
+                    new_item = pd.DataFrame([{"訂單編號": target_oid, "類別": cat, "項目名稱": final_name, "金額": int(amt), "日期": str(dt), "備註": note}])
+                    conn.update(worksheet="採購明細", data=pd.concat([df_details, new_item], ignore_index=True))
+                    st.success(f"已記錄 {final_name} 的項目"); st.rerun()
 
-# --- 功能 2：新增客戶訂單 ---
+# --- 功能 2：新增訂單 ---
 elif choice == "➕ 新增客戶訂單":
-    st.header("📋 建立新客戶資料")
-    
-    # 將類別移出 Form 以達到連動效果
-    n_cat = st.selectbox("1. 施工類別 (請先選類別再填表)", list(WORKER_GROUPS.keys()), key="add_cat")
-    
-    with st.form("new_order_form", clear_on_submit=True):
-        n_date = st.date_input("訂單日期", value=datetime.now())
-        oid = st.text_input("訂單編號 (手寫單號)*", value=f"ORD{datetime.now().strftime('%m%d%H%M')}")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            n_name = st.text_input("客戶姓名*")
-            n_phone = st.text_input("聯絡電話")
-            n_addr = st.text_input("施工地址*")
-        with col2:
-            n_worker = st.selectbox("2. 指定師傅", WORKER_GROUPS[n_cat])
-            n_wage = st.number_input("師傅工資", min_value=0, step=1)
-            n_total = st.number_input("總金額", min_value=0, step=1)
-            n_paid = st.number_input("訂金", min_value=0, step=1)
-        
-        n_content = st.text_area("訂購內容")
-        
-        if st.form_submit_button("✅ 儲存建檔"):
-            if not n_name or not n_addr or not oid:
-                st.error("姓名、地址與編號為必填項！")
-            else:
-                new_row = pd.DataFrame([{
-                    "訂單編號": str(oid), "訂單日期": str(n_date), "客戶姓名": n_name, "電話": str(n_phone), "地址": n_addr, 
-                    "訂購內容": n_content, "總金額": int(n_total), "已收金額": int(n_paid), "師傅工資": int(n_wage), 
-                    "施工狀態": "已接單", "代工師傅": n_worker, "施工類別": n_cat
-                }])
-                df_s = pd.concat([df_orders, new_row], ignore_index=True).drop(columns=['年份', '月份'], errors='ignore')
-                df_s['訂單日期'] = pd.to_datetime(df_s['訂單日期']).dt.strftime('%Y-%m-%d')
-                conn.update(worksheet="訂單資料", data=df_s)
-                st.success("建檔成功！")
+    st.header("📋 新建立訂單")
+    with st.form("new_order"):
+        oid = st.text_input("訂單編號 (單號)*", value=f"ORD{datetime.now().strftime('%m%d%H%M')}")
+        n_name = st.text_input("客戶姓名*")
+        n_addr = st.text_input("地址*")
+        n_total = st.number_input("合約總額", min_value=0)
+        if st.form_submit_button("✅ 建立訂單"):
+            new_order = pd.DataFrame([{"訂單編號": oid, "訂單日期": str(datetime.now().date()), "客戶姓名": n_name, "地址": n_addr, "總金額": n_total, "已收金額": 0, "施工狀態": "已接單"}])
+            conn.update(worksheet="訂單資料", data=pd.concat([df_orders, new_order], ignore_index=True))
+            st.success("訂單已建立，請至『客戶資料與明細』新增師傅與叫貨。")
 
-# --- 功能 3：損益分析 ---
-elif choice == "💰 損益與採購分析":
-    pwd = st.text_input("管理密碼", type="password")
+# --- 功能 3：報表 (自動統計師傅請款) ---
+elif choice == "💰 損益與清款報表":
+    pwd = st.text_input("密碼", type="password")
     if pwd == ADMIN_PASSWORD:
         st.header("📊 經營分析報表")
-        col_y, col_m = st.columns(2)
-        rpt_y = col_y.selectbox("年份", sorted(df_orders['年份'].unique().tolist(), reverse=True))
-        rpt_m = col_m.selectbox("月份", list(range(1, 13)), index=datetime.now().month-1)
-        
-        p_sum = df_purchases.groupby("訂單編號")["進貨金額"].sum().reset_index()
-        p_sum["訂單編號"] = p_sum["訂單編號"].apply(fix_format)
-        full_rpt = pd.merge(df_orders, p_sum, on="訂單編號", how="left").fillna(0)
-        full_rpt['淨利'] = full_rpt['總金額'] - full_rpt['師傅工資'] - full_rpt['進貨金額']
-        
-        monthly_rpt = full_rpt[(full_rpt['年份'] == rpt_y) & (full_rpt['月份'] == rpt_m)]
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric(f"{rpt_m}月 總業績", f"${int(monthly_rpt['總金額'].sum()):,.0f}")
-        m2.metric(f"{rpt_m}月 總支出", f"${int(monthly_rpt['師傅工資'].sum() + monthly_rpt['進貨金額'].sum()):,.0f}")
-        m3.metric(f"{rpt_m}月 淨利", f"${int(monthly_rpt['淨利'].sum()):,.0f}")
-        
+        # 師傅清款統計
+        st.subheader("👷 師傅工資清款統計 (依明細自動加總)")
+        worker_df = df_details[df_details["類別"] == "師傅工資"]
+        if not worker_df.empty:
+            summary = worker_df.groupby("項目名稱")["金額"].sum().reset_index().rename(columns={"項目名稱": "師傅姓名", "金額": "本月累計應付"})
+            st.dataframe(summary.style.format({"本月累計應付": "${:,.0f}"}), use_container_width=True)
+        else:
+            st.info("尚無工資紀錄")
+            
         st.divider()
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.subheader("👷 師傅工資清款")
-            if not monthly_rpt.empty:
-                w_pay = monthly_rpt.groupby("代工師傅")["師傅工資"].sum().reset_index()
-                st.dataframe(w_pay[w_pay["師傅工資"]>0].style.format({"師傅工資": "${:,.0f}"}), use_container_width=True)
-        with col_b:
-            st.subheader("🏢 廠商叫貨統計")
-            df_purchases['叫貨日期'] = pd.to_datetime(df_purchases['叫貨日期'])
-            p_fil = df_purchases[(df_purchases['叫貨日期'].dt.year == rpt_y) & (df_purchases['叫貨日期'].dt.month == rpt_m)]
-            if not p_fil.empty:
-                v_s = p_fil.groupby("廠商名稱")["進貨金額"].sum().reset_index()
-                st.dataframe(v_s.style.format({"進貨金額": "${:,.0f}"}), use_container_width=True)
-        
-        st.divider()
-        st.subheader("📝 客戶損益明細")
-        st.dataframe(monthly_rpt[["訂單編號", "客戶姓名", "總金額", "進貨金額", "師傅工資", "淨利", "施工狀態", "代工師傅"]].style.format({"總金額": "{:,.0f}", "進貨金額": "{:,.0f}", "師傅工資": "{:,.0f}", "淨利": "{:,.0f}"}))
+        st.subheader("📈 損益一覽")
+        # 計算每筆單的材料與工資
+        cost_sum = df_details.groupby("訂單編號")["金額"].sum().reset_index().rename(columns={"金額": "總支出"})
+        final_rpt = pd.merge(df_orders, cost_sum, on="訂單編號", how="left").fillna(0)
+        final_rpt["淨利"] = final_rpt["總金額"] - final_rpt["總支出"]
+        st.dataframe(final_rpt[["訂單編號", "客戶姓名", "總金額", "總支出", "淨利", "施工狀態"]].style.format("{:,.0f}", subset=["總金額", "總支出", "淨利"]))
