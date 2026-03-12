@@ -221,4 +221,4 @@ elif choice == "💰 損益中心":
             m_df[["訂單編號", "客戶姓名", "總金額", "總支出", "淨利", "施工狀態"]].style.format({
                 "總金額": "${:,.0f}", "總支出": "${:,.0f}", "淨利": "${:,.0f}"
             }), use_container_width=True
-        )}", "淨利": "${:,.0f}"}), use_container_width=True)
+        )
