@@ -88,7 +88,7 @@ def safe_update(sheet_name, data):
 st.sidebar.title("🏮 窗簾經營管理中心")
 choice = st.sidebar.selectbox("功能導覽", ["📇 客戶資料卡", "➕ 新增客戶訂單", "💰 損益中心"])
 
-# --- 功能 1：客戶資料卡 (含月份篩選、修改、刪除) ---
+# --- 功能 1：客戶資料卡 ---
 if choice == "📇 客戶資料卡":
     st.header("📇 客戶資料管理")
     if not df_orders.empty:
@@ -118,12 +118,14 @@ if choice == "📇 客戶資料卡":
                 
                 u_total = cl3.number_input("總合約金額", value=to_int(curr.get('總金額', 0)))
                 u_paid = cl3.number_input("已收訂金", value=to_int(curr.get('已收金額', 0)))
-                u_status = st.selectbox("狀態", STATUS_OPTIONS, index=STATUS_OPTIONS.index(curr['施工狀態']) if curr['施工狀態'] in STATUS_OPTIONS else 0)
+                u_status = cl3.selectbox("狀態", STATUS_OPTIONS, index=STATUS_OPTIONS.index(curr['施工狀態']) if curr['施工狀態'] in STATUS_OPTIONS else 0)
                 u_content = st.text_area("📦 訂購內容 (尺寸、材質)", value=str(curr.get('訂購內容', '')))
                 
                 if st.form_submit_button("💾 儲存所有修改"):
+                    # 【核心修復點】：9個欄位對齊9個變數，解決 TypeError
                     df_orders.loc[idx, ["訂單編號", "客戶姓名", "電話", "訂單日期", "地址", "總金額", "已收金額", "施工狀態", "訂購內容"]] = \
                         [u_oid, u_name, u_phone, str(u_date), u_addr, u_total, u_paid, u_status, u_content]
+                    
                     if safe_update("訂單資料", df_orders):
                         if u_oid != this_oid:
                             df_details.loc[df_details["訂單編號"] == this_oid, "訂單編號"] = u_oid
@@ -155,7 +157,7 @@ if choice == "📇 客戶資料卡":
             s_list = VENDOR_DATA[s_cat] if it_type == "廠商叫貨" else WORKER_GROUPS[s_cat]
             with st.form("add_det_form", clear_on_submit=True):
                 f_name = st.selectbox("名稱", s_list + ["其他"])
-                other_n = st.text_input("自定義名稱 (選其他才填)") if f_name == "其他" else ""
+                other_n = st.text_input("自定義名稱 (選其他才填)") if f_name == "核心" or f_name == "其他" else ""
                 f_amt = st.number_input("金額", min_value=0, step=1)
                 f_dt = st.date_input("日期", value=datetime.now())
                 f_note = st.text_input("備註")
@@ -187,7 +189,7 @@ elif choice == "➕ 新增客戶訂單":
                 safe_update("訂單資料", pd.concat([df_orders, new_row], ignore_index=True))
                 st.success(f"🎊 單號 {oid} 建立成功！")
 
-# --- 功能 3：損益中心 (呈現當月金額、成本、毛利) ---
+# --- 功能 3：損益中心 ---
 elif choice == "💰 損益中心":
     pwd = st.text_input("管理密碼", type="password")
     if pwd == ADMIN_PASSWORD:
@@ -204,8 +206,8 @@ elif choice == "💰 損益中心":
         
         st.write(f"### 📅 {r_y} 年 {r_m} 月 營運結算")
         m1, m2, m3 = st.columns(3)
-        m1.metric("當月業績 (合約金額)", f"${int(m_df['總金額'].sum()):,.0f}")
-        m2.metric("當月成本 (支出)", f"${int(m_df['總支出'].sum()):,.0f}")
+        m1.metric("當月業績", f"${int(m_df['總金額'].sum()):,.0f}")
+        m2.metric("當月成本", f"${int(m_df['總支出'].sum()):,.0f}")
         m3.metric("當月毛利 (淨利)", f"${int(m_df['淨利'].sum()):,.0f}")
         
         st.divider()
@@ -213,9 +215,10 @@ elif choice == "💰 損益中心":
         st.dataframe(m_df[["訂單編號", "客戶姓名", "總金額", "總支出", "淨利", "施工狀態"]].style.format({"總金額": "${:,.0f}", "總支出": "${:,.0f}", "淨利": "${:,.0f}"}), use_container_width=True)
 
         st.divider()
-        st.subheader("👷 當月師傅工資匯總")
+        st.subheader("季度/月度 師傅工資匯總")
         w_df = df_details[df_details["類別"] == "師傅工資"]
-        w_df['日期'] = pd.to_datetime(w_df['日期'], errors='coerce')
-        m_w = w_df[(w_df['日期'].dt.year == r_y) & (w_df['日期'].dt.month == r_m)]
-        if not m_w.empty:
-            st.dataframe(m_w.groupby("項目名稱")["金額"].sum().reset_index().rename(columns={"項目名稱": "師傅", "金額": "工資金額"}).style.format({"工資金額": "${:,.0f}"}))
+        if not w_df.empty:
+            w_df['日期'] = pd.to_datetime(w_df['日期'], errors='coerce')
+            m_w = w_df[(w_df['日期'].dt.year == r_y) & (w_df['日期'].dt.month == r_m)]
+            if not m_w.empty:
+                st.dataframe(m_w.groupby("項目名稱")["金額"].sum().reset_index().rename(columns={"項目名稱": "師傅", "金額": "工資金額"}).style.format({"工資金額": "${:,.0f}"}))
